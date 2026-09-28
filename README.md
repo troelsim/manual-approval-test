@@ -1,7 +1,8 @@
 # Deployment pipeline with manual approval
 
-This repository contains a GitHub Actions pipeline that smoke-tests staging and
-then waits for a human to approve the production deploy.
+This repository contains a GitHub Actions pipeline that presents a reviewer
+with a sign-off checklist and then waits for that reviewer to approve the
+production deploy.
 
 ## What the pipeline does
 
@@ -13,27 +14,24 @@ workflow**.
 push to main / workflow_dispatch
           │
           ▼
-   ┌──────────────┐   any check fails   ┌──────────────────────┐
-   │  smoke-test  │ ──────────────────▶ │ job fails, run stops │
-   └──────────────┘                     └──────────────────────┘
-          │ all checks pass
+   ┌──────────────────────┐   writes .github/deploy-checklist.md
+   │ pre-deploy-checklist │   to the run's Summary tab
+   └──────────────────────┘
+          │
           ▼
-   ┌──────────────┐   waits for a required reviewer on the
-   │ deploy-prod  │   `Prod` environment, then runs
-   └──────────────┘   scripts/deploy.sh
+   ┌──────────────────────┐   waits for a required reviewer on the
+   │     deploy-prod      │   `Prod` environment, then runs
+   └──────────────────────┘   scripts/deploy.sh
 ```
 
-1. **`smoke-test`** checks out the repo and runs
-   [`scripts/smoke-test.sh`](scripts/smoke-test.sh) against `STAGING_URL`. The
-   URL comes from a repository variable of the same name and defaults to
-   `https://staging.example.com` when the variable is not set. The script runs
-   each check, writes a markdown table of PASS/FAIL rows, and reports whether
-   anything failed through a `failed` step output. The job then writes that
-   table plus a **Reviewer Checklist** to the job summary and fails if any
-   check failed. A failed smoke test therefore never reaches the approval gate.
-2. **`deploy-prod`** depends on `smoke-test` and targets the `Prod`
-   environment. Because that environment has required reviewers, GitHub pauses
-   the run here until someone approves it. Once approved, the job runs
+1. **`pre-deploy-checklist`** checks out the repo and writes the contents of
+   [`.github/deploy-checklist.md`](.github/deploy-checklist.md) to the job
+   summary, along with the commit, ref, who triggered the run, and the staging
+   URL. Nothing is executed against staging; the checklist is for a human to
+   work through.
+2. **`deploy-prod`** depends on that job and targets the `Prod` environment.
+   Because that environment has required reviewers, GitHub pauses the run here
+   until someone approves it. Once approved, the job runs
    [`scripts/deploy.sh`](scripts/deploy.sh).
 
 Only one deploy runs at a time (`concurrency: deploy-production`). Runs that
@@ -44,36 +42,29 @@ are already waiting at the gate are not cancelled by newer pushes.
 | File | Purpose |
 |------|---------|
 | `.github/workflows/deploy.yml` | The two-job pipeline described above. |
-| `scripts/smoke-test.sh` | Smoke checks. Add real tests here, not in the YAML. |
+| `.github/deploy-checklist.md` | The sign-off checklist shown to reviewers. Edit this to change what they must confirm. |
 | `scripts/deploy.sh` | Placeholder deploy script. Replace the marked section with real deploy logic. |
 
-### Adding smoke checks
+### Editing the checklist
 
-Every check in `scripts/smoke-test.sh` is one call to the `check` helper:
-
-```bash
-check "<name shown in the summary>" "<shell command that exits 0 on success>"
-```
-
-The three placeholder checks only assert that `/health`, `/login` and
-`/api/version` return a 2xx status. Replace them with real assertions. The
-script can be run locally:
-
-```bash
-STAGING_URL=https://staging.example.com ./scripts/smoke-test.sh
-```
+The checklist is plain markdown in `.github/deploy-checklist.md`. Add, remove
+or reword items there; the workflow renders the file as-is. Keep each item as a
+`- [ ]` line so it shows as a checkbox in the summary. The checklist can mix
+manual smoke tests, product sign-off, comms, and anything else that has to be
+true before production changes.
 
 ### Setting the staging URL
 
 Go to **Settings → Secrets and variables → Actions → Variables** and add a
-repository variable named `STAGING_URL`. Without it, the workflow falls back to
-`https://staging.example.com`.
+repository variable named `STAGING_URL`. It is shown in the summary so the
+reviewer has a link to the environment they are checking. Without it, the
+workflow falls back to `https://staging.example.com`.
 
 ## Creating the `Prod` environment
 
 The approval gate only exists if the `Prod` environment has at least one
 required reviewer. Until it is configured, `deploy-prod` runs immediately after
-`smoke-test` with no pause.
+the checklist job with no pause.
 
 ### Via the GitHub UI
 
@@ -142,21 +133,14 @@ When a run reaches `deploy-prod`, GitHub emails and notifies the required
 reviewers and the run shows **Waiting** on the Actions page.
 
 1. Open the run under **Actions → Deploy** and click the **Summary** tab.
-2. Read the **Smoke test results** table. Every row should show **PASS**; if
-   any row shows FAIL the run has already stopped and there is nothing to
-   approve.
-3. Work through the **Reviewer Checklist** in the same summary:
-   - Automated checks passed
-   - Staging UI spot-checked
-   - Release notes reviewed
-   - No active incidents
-   - Rollback plan confirmed
-
-   The checkboxes are a reading aid and cannot be ticked in the summary; treat
-   them as things to confirm before approving.
-4. Click **Review deployments** at the top of the run, tick `Prod`, add
-   an optional comment (for example which checklist items you verified), and
-   choose **Approve and deploy** or **Reject**.
+2. Read the **Production deploy: reviewer checklist** section. It names the
+   commit and ref being deployed and links to staging.
+3. Work through every checklist item against staging. The checkboxes in the
+   summary are a reading aid and cannot be ticked there; treat them as things
+   to confirm before approving.
+4. Click **Review deployments** at the top of the run, tick `Prod`, note in the
+   comment which items you verified, and choose **Approve and deploy** or
+   **Reject**.
 
 Approving starts `deploy-prod`, which runs `scripts/deploy.sh`. Rejecting
 fails the run without deploying. Pending approvals expire after 30 days.

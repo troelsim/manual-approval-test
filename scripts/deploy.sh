@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Production deploy script. Runs only after the smoke tests pass and a required
-# reviewer approves the `Prod` environment in GitHub Actions.
+# Production deploy script. Runs only after a required reviewer works through the
+# checklist and approves the `Prod` environment in GitHub Actions.
 #
 # Environment variables (set by the workflow):
 #   GIT_SHA  Commit being deployed.
