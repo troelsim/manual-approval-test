@@ -1,0 +1,95 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Only one deploy at a time. In-flight runs are not cancelled so a run that is
+# already waiting at the production approval gate is never silently dropped.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    name: Smoke test staging
+    runs-on: ubuntu-latest
+    env:
+      # Set the STAGING_URL repository variable under Settings -> Secrets and
+      # variables -> Actions -> Variables to override the default.
+      STAGING_URL: ${{ vars.STAGING_URL || 'https://staging.example.com' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run smoke tests against staging
+        id: smoke
+        # The script records each check in $SMOKE_RESULTS_FILE and sets the
+        # `failed` step output to "true" if any check fails. It always exits 0 so
+        # the summary step below runs even on failure; the final step fails the
+        # job based on the output.
+        run: ./scripts/smoke-test.sh
+        env:
+          SMOKE_RESULTS_FILE: ${{ runner.temp }}/smoke-results.md
+
+      - name: Write job summary
+        if: always()
+        env:
+          SMOKE_RESULTS_FILE: ${{ runner.temp }}/smoke-results.md
+          SMOKE_FAILED: ${{ steps.smoke.outputs.failed }}
+        run: |
+          {
+            echo "## Smoke test results"
+            echo
+            echo "Target: \`${STAGING_URL}\`"
+            echo
+            echo "| Check | Result |"
+            echo "|-------|--------|"
+            cat "${SMOKE_RESULTS_FILE}"
+            echo
+            if [ "${SMOKE_FAILED}" = "true" ]; then
+              echo "**Overall: FAILED** - the production deploy will not be offered for approval."
+            else
+              echo "**Overall: PASSED** - the production deploy is waiting for approval."
+            fi
+            echo
+            echo "## Reviewer Checklist"
+            echo
+            echo "Confirm each item before approving the \`production\` deployment:"
+            echo
+            echo "- [ ] Automated checks passed (all rows above show PASS)"
+            echo "- [ ] Staging UI spot-checked"
+            echo "- [ ] Release notes reviewed"
+            echo "- [ ] No active incidents"
+            echo "- [ ] Rollback plan confirmed"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Fail job if any smoke check failed
+        if: steps.smoke.outputs.failed == 'true'
+        run: |
+          echo "::error::One or more smoke checks failed. See the job summary for details."
+          exit 1
+
+  deploy-prod:
+    name: Deploy to production
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    # The `Prod` environment must be configured with required reviewers
+    # (Settings -> Environments). This job pauses until a reviewer approves it.
+    # See README.md for setup instructions.
+    environment:
+      name: Prod
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy
+        run: ./scripts/deploy.sh
+        env:
+          GIT_SHA: ${{ github.sha }}
+          GIT_REF: ${{ github.ref_name }}
